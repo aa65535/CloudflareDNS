@@ -676,7 +676,7 @@ static int should_replace_query(ns_msg msg) {
 static void usage() {
   printf("%s\n", "\
 usage: cfdns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CFROUTE_FILE] [-s DNS] [-m] [-v] [-V]\n\
+       [-c CFROUTE_FILE] [-s DNS] [-v] [-V]\n\
 Forward DNS requests.\n\
 \n\
   -c CFROUTE_FILE       path to cloudflare route file\n\
