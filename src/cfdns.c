@@ -72,7 +72,8 @@ static const char *default_listen_port = "53";
 static char *listen_addr = NULL;
 static char *listen_port = NULL;
 
-static char *ip_list_file = NULL;
+static char *ip_file = NULL;
+static char *ip_arg = NULL;
 static struct in_addr replaced_ip;
 
 static int parse_ip_list();
@@ -232,7 +233,7 @@ static int setnonblock(int sock) {
 
 static int parse_args(int argc, char **argv) {
   int ch;
-  while ((ch = getopt(argc, argv, "hb:p:s:l:c:y:dmvV")) != -1) {
+  while ((ch = getopt(argc, argv, "hb:p:s:l:i:c:vV")) != -1) {
     switch (ch) {
       case 'h':
         usage();
@@ -247,7 +248,10 @@ static int parse_args(int argc, char **argv) {
         dns_server = strdup(optarg);
         break;
       case 'l':
-        ip_list_file = strdup(optarg);
+        ip_file = strdup(optarg);
+        break;
+      case 'i':
+        ip_arg = strdup(optarg);
         break;
       case 'c':
         cfroute_file = strdup(optarg);
@@ -305,15 +309,21 @@ static int parse_ip_list() {
   size_t len = sizeof(line_buf);
   int i = 0;
 
-  if (ip_list_file == NULL) {
+  if (ip_arg != NULL) {
+    if (0 != inet_aton(ip_arg, &replaced_ip)) {
+      return 0;
+    }
+  }
+
+  if (ip_file == NULL) {
     VERR("ip list file is not specified\n");
     return -1;
   }
 
-  fp = fopen(ip_list_file, "rb");
+  fp = fopen(ip_file, "rb");
   if (fp == NULL) {
     ERR("fopen");
-    VERR("Can't open ip list: %s\n", ip_list_file);
+    VERR("Can't open ip list: %s\n", ip_file);
     return -1;
   }
 
@@ -330,7 +340,7 @@ static int parse_ip_list() {
     }
   }
 
-  VERR("invalid ip list file: %s\n", ip_list_file);
+  VERR("invalid ip list file: %s\n", ip_file);
   return -1;
 }
 
@@ -680,7 +690,8 @@ usage: cfdns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
 Forward DNS requests.\n\
 \n\
   -c CFROUTE_FILE       path to cloudflare route file\n\
-  -l IPLIST_FILE        path to beat ip file\n\
+  -l IPLIST_FILE        path to better ip file\n\
+  -i REPLACED_IP        better ip, if specified, the -l parameter is ignored \n\
   -b BIND_ADDR          address that listens, default: 0.0.0.0\n\
   -p BIND_PORT          port that listens, default: 53\n\
   -s DNS                DNS servers to use, default: 8.8.8.8\n\
