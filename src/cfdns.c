@@ -53,7 +53,6 @@ typedef struct {
 // default max EDNS.0 UDP packet from RFC5625
 #define BUF_SIZE 4096
 static char global_buf[BUF_SIZE];
-static char resp_buf[BUF_SIZE];
 static int verbose = 0;
 
 static const char *default_dns_servers = "8.8.8.8";
@@ -74,15 +73,15 @@ static char *listen_port = NULL;
 
 static char *ip_file = NULL;
 static char *ip_arg = NULL;
-static struct in_addr replaced_ip;
+static struct in_addr better_ip;
 
-static int parse_ip_list();
+static int parse_better_ip();
 
 #define NETMASK_MIN 0
-static char *cfroute_file = NULL;
-static net_list_t cfroute_list;
+static char *cf_ips_file = NULL;
+static net_list_t cf_ips_list;
 
-static int parse_cfroute();
+static int parse_cf_ips();
 
 static int test_ip_in_list(struct in_addr ip, const net_list_t *netlist);
 
@@ -92,7 +91,7 @@ static void dns_handle_local();
 
 static void dns_handle_remote();
 
-static int gen_resp_data(char *buf_ptr, char *gfuf_ptr, struct in_addr *addr, ns_msg msg);
+static int gen_resp_data(char *buf_ptr, struct in_addr *addr, ns_msg msg);
 
 static const char *hostname_from_question(ns_msg msg);
 
@@ -118,11 +117,9 @@ static void usage(void);
   char *time_str = ctime(&now);                                     \
   time_str[strlen(time_str) - 1] = '\0';                            \
   if (t == 0) {                                                     \
-    if (stdout != o || verbose) {                                   \
-      fprintf(o, "%s ", time_str);                                  \
-      fprintf(o, s);                                                \
-      fflush(o);                                                    \
-    }                                                               \
+    fprintf(o, "%s ", time_str);                                    \
+    fprintf(o, s);                                                  \
+    fflush(o);                                                      \
   } else if (t == 1) {                                              \
     fprintf(o, "%s %s:%d ", time_str, __FILE__, __LINE__);          \
     perror(v);                                                      \
@@ -155,10 +152,13 @@ static void gcov_handler(int signum)
   BUF_PUT8(p, v);                                                   \
 } while (0)
 
-#define MEM_COPY(d, s, l) do {                                      \
+#define BUF_SKIP(p, l) do {                                         \
+  p+=l;                                                             \
+} while (0)
+
+#define MEM_CPY(d, s, l) do {                                       \
   memcpy(d, s, l);                                                  \
   d+=l;                                                             \
-  s+=l;                                                             \
 } while (0)
 
 int main(int argc, char **argv) {
@@ -172,9 +172,9 @@ int main(int argc, char **argv) {
   memset(&id_addr_queue, 0, sizeof(id_addr_queue));
   if (0 != parse_args(argc, argv))
     return EXIT_FAILURE;
-  if (0 != parse_ip_list())
+  if (0 != parse_better_ip())
     return EXIT_FAILURE;
-  if (0 != parse_cfroute())
+  if (0 != parse_cf_ips())
     return EXIT_FAILURE;
   if (0 != resolve_dns_server())
     return EXIT_FAILURE;
@@ -254,7 +254,7 @@ static int parse_args(int argc, char **argv) {
         ip_arg = strdup(optarg);
         break;
       case 'c':
-        cfroute_file = strdup(optarg);
+        cf_ips_file = strdup(optarg);
         break;
       case 'v':
         verbose = 1;
@@ -302,7 +302,7 @@ static int resolve_dns_server() {
   return 0;
 }
 
-static int parse_ip_list() {
+static int parse_better_ip() {
   FILE *fp;
   char line_buf[32];
   char *line = NULL;
@@ -310,7 +310,9 @@ static int parse_ip_list() {
   int i = 0;
 
   if (ip_arg != NULL) {
-    if (0 != inet_aton(ip_arg, &replaced_ip)) {
+    if (0 != inet_aton(ip_arg, &better_ip)) {
+        if (verbose)
+          LOG("better ip : %s\n", ip_arg);
       return 0;
     }
   }
@@ -335,7 +337,9 @@ static int parse_ip_list() {
     if (sp_pos) *sp_pos = 0;
     sp_pos = strchr(line, '/');
     if (sp_pos) *sp_pos = 0;
-    if (0 != inet_aton(line, &replaced_ip)) {
+    if (0 != inet_aton(line, &better_ip)) {
+      if (verbose)
+        LOG("better ip : %s\n", line);
       return 0;
     }
   }
@@ -354,33 +358,33 @@ static int cmp_net_mask(const void *a, const void *b) {
   return -1;
 }
 
-static int parse_cfroute() {
+static int parse_cf_ips() {
   FILE *fp;
   char line_buf[32];
   char *line;
   size_t len = sizeof(line_buf);
   char net[32];
-  cfroute_list.entries = 0;
+  cf_ips_list.entries = 0;
   int i = 0;
   int cidr;
 
-  if (cfroute_file == NULL) {
-    VERR("cfroute file is not specified\n");
+  if (cf_ips_file == NULL) {
+    VERR("cf ips file is not specified\n");
     return -1;
   }
 
-  fp = fopen(cfroute_file, "rb");
+  fp = fopen(cf_ips_file, "rb");
   if (fp == NULL) {
     ERR("fopen");
-    VERR("Can't open cfroute: %s\n", cfroute_file);
+    VERR("Can't open cf ips file: %s\n", cf_ips_file);
     return -1;
   }
 
   while ((line = fgets(line_buf, len, fp))) {
-    cfroute_list.entries++;
+    cf_ips_list.entries++;
   }
 
-  cfroute_list.nets = calloc(cfroute_list.entries, sizeof(net_mask_t));
+  cf_ips_list.nets = calloc(cf_ips_list.entries, sizeof(net_mask_t));
   if (0 != fseek(fp, 0, SEEK_SET)) {
     VERR("fseek");
     return -1;
@@ -392,26 +396,28 @@ static int parse_cfroute() {
     if (sp_pos) *sp_pos = 0;
     sp_pos = strchr(line, '\n');
     if (sp_pos) *sp_pos = 0;
+    if (verbose)
+      LOG("cloudflare ip : %s\n", line);
     sp_pos = strchr(line, '/');
     if (sp_pos) {
       *sp_pos = 0;
       cidr = atoi(sp_pos + 1);
       if (cidr > 0) {
-        cfroute_list.nets[i].mask = (1 << (32 - cidr)) - 1;
+        cf_ips_list.nets[i].mask = (1 << (32 - cidr)) - 1;
       } else {
-        cfroute_list.nets[i].mask = UINT32_MAX;
+        cf_ips_list.nets[i].mask = UINT32_MAX;
       }
     } else {
-      cfroute_list.nets[i].mask = NETMASK_MIN;
+      cf_ips_list.nets[i].mask = NETMASK_MIN;
     }
-    if (0 == inet_aton(line, &cfroute_list.nets[i].net)) {
-      VERR("invalid addr %s in %s:%d\n", line, cfroute_file, i + 1);
+    if (0 == inet_aton(line, &cf_ips_list.nets[i].net)) {
+      VERR("invalid addr %s in %s:%d\n", line, cf_ips_file, i + 1);
       return 1;
     }
     i++;
   }
 
-  qsort(cfroute_list.nets, cfroute_list.entries, sizeof(net_mask_t), cmp_net_mask);
+  qsort(cf_ips_list.nets, cf_ips_list.entries, sizeof(net_mask_t), cmp_net_mask);
 
   fclose(fp);
   return 0;
@@ -492,12 +498,15 @@ static void dns_handle_local() {
       free(src_addr);
       return;
     }
-    // parse DNS query id
-    // TODO generate id for each request to avoid conflicts
-    query_id = ns_msg_id(msg);
-    question_hostname = hostname_from_question(msg);
-    LOG("request %s from", question_hostname);
 
+    if (verbose) {
+      question_hostname = hostname_from_question(msg);
+      if (question_hostname)
+        LOG("request %s from %s:%d", question_hostname, inet_ntoa(((struct sockaddr_in *) src_addr)->sin_addr), htons(((struct sockaddr_in *) src_addr)->sin_port));
+    }
+
+    // parse DNS query id
+    query_id = ns_msg_id(msg);
     // assign a new id
     uint16_t new_id;
     do {
@@ -541,12 +550,15 @@ static void dns_handle_remote() {
       free(src_addr);
       return;
     }
+
+    if (verbose) {
+      question_hostname = hostname_from_question(msg);
+      if (question_hostname)
+        LOG("response %s from %s:%d - ", question_hostname, inet_ntoa(((struct sockaddr_in *) src_addr)->sin_addr), htons(((struct sockaddr_in *) src_addr)->sin_port));
+    }
+
     // parse DNS query id
     query_id = ns_msg_id(msg);
-    question_hostname = hostname_from_question(msg);
-    if (question_hostname) {
-      LOG("response %s from %s:%d - ", question_hostname, inet_ntoa(((struct sockaddr_in *) src_addr)->sin_addr), htons(((struct sockaddr_in *) src_addr)->sin_port));
-    }
     id_addr_t *id_addr = queue_lookup(query_id);
     if (id_addr) {
       id_addr->addr->sa_family = AF_INET;
@@ -556,15 +568,13 @@ static void dns_handle_remote() {
       if (r == 0) {
         if (verbose)
           printf("pass\n");
-        if (-1 == sendto(local_sock, global_buf, len, 0, id_addr->addr, id_addr->addrlen))
-          ERR("sendto");
       } else {
         if (verbose)
           printf("replace\n");
-        int buf_len = gen_resp_data(resp_buf + 0, global_buf + 0, &replaced_ip, msg);
-        if (-1 == sendto(local_sock, resp_buf, buf_len, 0, id_addr->addr, id_addr->addrlen))
-          ERR("sendto");
+        len = gen_resp_data(global_buf, &better_ip, msg);
       }
+      if (-1 == sendto(local_sock, global_buf, len, 0, id_addr->addr, id_addr->addrlen))
+        ERR("sendto");
     } else {
       if (verbose)
         printf("skip\n");
@@ -574,29 +584,26 @@ static void dns_handle_remote() {
     ERR("recvfrom");
 }
 
-static int gen_resp_data(char *buf_ptr, char *gfuf_ptr, struct in_addr *addr, ns_msg msg) {
+static int gen_resp_data(char *buf_ptr, struct in_addr *addr, ns_msg msg) {
   ns_rr rr;
-  int rrnum, rrmax, result_len, buf_len = 0;
+  int rrnum, rrmax, result_len;
   const char *result;
-  // Transaction ID & Flags & Questions
-  MEM_COPY(buf_ptr, gfuf_ptr, 6);
-  buf_len += 6;
+  char *buf_start = buf_ptr;
+  // Skip Transaction ID & Flags & Questions
+  BUF_SKIP(buf_ptr, 6);
   // Set Answer RRs: 1
   BUF_PUT16(buf_ptr, 1);
   // Set Authority RRs: 0
   BUF_PUT16(buf_ptr, 0);
   // Set Additional RRs: 0
   BUF_PUT16(buf_ptr, 0);
-  gfuf_ptr += 6;
-  buf_len += 6;
-  // Set Queries Data
+  // Skip Queries
   rrmax = ns_msg_count(msg, ns_s_qd);
   for (rrnum = 0; rrnum < rrmax; rrnum++) {
     ns_parserr(&msg, ns_s_qd, rrnum, &rr);
     result = ns_rr_name(rr);
     result_len = strlen(result) + 6;
-    MEM_COPY(buf_ptr, gfuf_ptr, result_len);
-    buf_len += result_len;
+    BUF_SKIP(buf_ptr, result_len);
   }
   // Set Answers Data
   BUF_PUT16(buf_ptr, 0xc00c);
@@ -605,9 +612,8 @@ static int gen_resp_data(char *buf_ptr, char *gfuf_ptr, struct in_addr *addr, ns
   BUF_PUT16(buf_ptr, 0);
   BUF_PUT16(buf_ptr, 300);
   BUF_PUT16(buf_ptr, 4);
-  memcpy(buf_ptr, addr, 4);
-  buf_len += 16;
-  return buf_len;
+  MEM_CPY(buf_ptr, addr, 4);
+  return buf_ptr - buf_start;
 }
 
 static void queue_add(id_addr_t id_addr) {
@@ -674,7 +680,7 @@ static int should_replace_query(ns_msg msg) {
       rd = ns_rr_rdata(rr);
       if (verbose)
         printf("%s, ", inet_ntoa(*(struct in_addr *) rd));
-      if (test_ip_in_list(*(struct in_addr *) rd, &cfroute_list)) {
+      if (test_ip_in_list(*(struct in_addr *) rd, &cf_ips_list)) {
         // replace
         return 1;
       }
@@ -686,12 +692,12 @@ static int should_replace_query(ns_msg msg) {
 static void usage() {
   printf("%s\n", "\
 usage: cfdns [-h] [-l IPLIST_FILE] [-b BIND_ADDR] [-p BIND_PORT]\n\
-       [-c CFROUTE_FILE] [-s DNS] [-v] [-V]\n\
+       [-c CF_IPS_FILE] [-i BETTER_IP] [-s DNS] [-v] [-V]\n\
 Forward DNS requests.\n\
 \n\
-  -c CFROUTE_FILE       path to cloudflare route file\n\
+  -c CF_IPS_FILE        path to cloudflare ips file\n\
   -l IPLIST_FILE        path to better ip file\n\
-  -i REPLACED_IP        better ip, if specified, the -l parameter is ignored \n\
+  -i BETTER_IP          better ip, if specified, the -l parameter is ignored \n\
   -b BIND_ADDR          address that listens, default: 0.0.0.0\n\
   -p BIND_PORT          port that listens, default: 53\n\
   -s DNS                DNS servers to use, default: 8.8.8.8\n\
