@@ -2,7 +2,7 @@
 # Process this file with autoconf to produce a configure script.
 
 AC_PREREQ([2.67])
-AC_INIT([CFDNS], [1.2.0], [aa65535@live.com])
+AC_INIT([CFDNS], [1.2.1], [aa65535@live.com])
 AC_CONFIG_SRCDIR([src/cfdns.c])
 AC_CONFIG_HEADERS([config.h])
 

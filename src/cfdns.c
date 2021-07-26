@@ -91,7 +91,7 @@ static void dns_handle_local();
 
 static void dns_handle_remote();
 
-static int gen_resp_data(char *buf_ptr, struct in_addr *addr, ns_msg msg);
+static int gen_resp_data(char *buf_ptr, struct in_addr *addr);
 
 static const char *hostname_from_question(ns_msg msg);
 
@@ -312,7 +312,7 @@ static int parse_better_ip() {
   if (ip_arg != NULL) {
     if (0 != inet_aton(ip_arg, &better_ip)) {
         if (verbose)
-          LOG("better ip : %s\n", ip_arg);
+          LOG("better ip: %s\n", ip_arg);
       return 0;
     }
   }
@@ -339,7 +339,7 @@ static int parse_better_ip() {
     if (sp_pos) *sp_pos = 0;
     if (0 != inet_aton(line, &better_ip)) {
       if (verbose)
-        LOG("better ip : %s\n", line);
+        LOG("better ip: %s\n", line);
       return 0;
     }
   }
@@ -397,7 +397,7 @@ static int parse_cf_ips() {
     sp_pos = strchr(line, '\n');
     if (sp_pos) *sp_pos = 0;
     if (verbose)
-      LOG("cloudflare ip : %s\n", line);
+      LOG("cloudflare ip: %s\n", line);
     sp_pos = strchr(line, '/');
     if (sp_pos) {
       *sp_pos = 0;
@@ -571,7 +571,7 @@ static void dns_handle_remote() {
       } else {
         if (verbose)
           printf("replace\n");
-        len = gen_resp_data(global_buf, &better_ip, msg);
+        len = gen_resp_data(global_buf, &better_ip);
       }
       if (-1 == sendto(local_sock, global_buf, len, 0, id_addr->addr, id_addr->addrlen))
         ERR("sendto");
@@ -584,10 +584,9 @@ static void dns_handle_remote() {
     ERR("recvfrom");
 }
 
-static int gen_resp_data(char *buf_ptr, struct in_addr *addr, ns_msg msg) {
-  ns_rr rr;
-  int rrnum, rrmax, result_len;
-  const char *result;
+static int gen_resp_data(char *buf_ptr, struct in_addr *addr) {
+  u_int i, len;
+  uint16_t count;
   char *buf_start = buf_ptr;
   // Skip Transaction ID & Flags & Questions
   BUF_SKIP(buf_ptr, 6);
@@ -598,21 +597,19 @@ static int gen_resp_data(char *buf_ptr, struct in_addr *addr, ns_msg msg) {
   // Set Additional RRs: 0
   BUF_PUT16(buf_ptr, 0);
   // Skip Queries
-  rrmax = ns_msg_count(msg, ns_s_qd);
-  for (rrnum = 0; rrnum < rrmax; rrnum++) {
-    ns_parserr(&msg, ns_s_qd, rrnum, &rr);
-    result = ns_rr_name(rr);
-    result_len = strlen(result) + 6;
-    BUF_SKIP(buf_ptr, result_len);
+  count = ns_get16(buf_start + 4);
+  for (i = 0; i < count; i++) {
+    len = strlen(buf_ptr) + 5;
+    BUF_SKIP(buf_ptr, len);
   }
   // Set Answers Data
-  BUF_PUT16(buf_ptr, 0xc00c);
-  BUF_PUT16(buf_ptr, 1);
-  BUF_PUT16(buf_ptr, 1);
-  BUF_PUT16(buf_ptr, 0);
-  BUF_PUT16(buf_ptr, 300);
-  BUF_PUT16(buf_ptr, 4);
-  MEM_CPY(buf_ptr, addr, 4);
+  BUF_PUT16(buf_ptr, 0xc00c);  // Name
+  BUF_PUT16(buf_ptr, 1); // Type
+  BUF_PUT16(buf_ptr, 1); // Class
+  BUF_PUT16(buf_ptr, 0); // TTL
+  BUF_PUT16(buf_ptr, 300); // TTL
+  BUF_PUT16(buf_ptr, 4); // Data Length
+  MEM_CPY(buf_ptr, addr, 4); // Data
   return buf_ptr - buf_start;
 }
 
